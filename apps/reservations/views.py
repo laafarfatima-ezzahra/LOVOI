@@ -1,4 +1,5 @@
 from django.shortcuts import render, redirect, get_object_or_404
+from django.urls import reverse
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib import messages
 from django.core.paginator import Paginator
@@ -25,7 +26,17 @@ import sys
 
 def conditions_location(request):
     """Simple public rental conditions page."""
-    return render(request, 'reservations/conditions_location.html')
+    return_url = request.GET.get('next')
+    if not return_url:
+        reservation_data = request.session.get('reservation_data') or {}
+        vehicle_id = reservation_data.get('vehicule_id')
+        if vehicle_id:
+            return_url = reverse('reservations:contract_sign', args=[vehicle_id])
+
+    if not return_url:
+        return_url = reverse('vehicles:vehicle_list')
+
+    return render(request, 'reservations/conditions_location.html', {'return_url': return_url})
 
 
 @login_required
@@ -143,6 +154,7 @@ def contract_sign(request, vehicle_id):
         'delivery_fee': delivery_fee,
         'nombre_jours': nombre_jours,
         'montant_total': montant_total,
+        'signature_date': timezone.localdate(),
     }
     return render(request, 'reservations/contract_sign.html', context)
 
@@ -222,11 +234,15 @@ def process_payment(request, vehicle_id):
         messages.error(request, 'Session expirée. Veuillez recommencer.')
         return redirect('reservations:reservation_create', vehicle_id=vehicle_id)
 
-    if 'contract_signed' not in request.session:
-        # Set it now since user is coming from payment modal
-        request.session['contract_signed'] = True
-
     if request.method == 'POST':
+        signature_name = (request.POST.get('signature_name') or request.session.get('signature_name') or '').strip()
+        if not signature_name:
+            messages.error(request, 'Veuillez signer le contrat avant de proceder au paiement.')
+            return redirect('reservations:contract_sign', vehicle_id=vehicle_id)
+
+        request.session['contract_signed'] = True
+        request.session['signature_name'] = signature_name
+
         data = request.session['reservation_data']
         payment_method = 'CARTE_BANCAIRE'
 
@@ -340,8 +356,12 @@ def reservation_detail(request, pk):
         if request.user.is_livreur():
             return redirect('accounts:dashboard_livreur')
         return redirect('accounts:dashboard_client')
+    has_avis = False
+    if request.user.is_authenticated:
+        has_avis = Avis.objects.filter(client=request.user, vehicule=reservation.vehicule).exists()
+
     return render(request, 'reservations/reservation_detail.html',
-                  {'reservation': reservation, 'today': timezone.localdate()})
+                  {'reservation': reservation, 'today': timezone.localdate(), 'has_avis': has_avis})
 
 
 @login_required
@@ -358,6 +378,11 @@ def my_reservations(request):
 def avis_create(request, vehicle_id):
     """Leave a review for a vehicle."""
     vehicule = get_object_or_404(Vehicule, pk=vehicle_id)
+
+    existing_avis = Avis.objects.filter(client=request.user, vehicule=vehicule).first()
+    if existing_avis:
+        messages.info(request, "Vous avez dÃ©jÃ  publiÃ© un avis pour ce vÃ©hicule.")
+        return redirect('vehicles:vehicle_detail', pk=vehicule.id)
 
     # Check if client has completed a rental for this vehicle
     has_rental = Reservation.objects.filter(
@@ -394,10 +419,30 @@ def reservation_list(request):
     if statut:
         reservations = reservations.filter(statut_reservation=statut)
 
+    reference = request.GET.get('reference', '').strip()
+    if reference:
+        if reference.isdigit():
+            reference_number = int(reference)
+            reservations = reservations.filter(Q(reference=reference_number) | Q(id=reference_number))
+        else:
+            reservations = reservations.none()
+
+    client = request.GET.get('client', '').strip()
+    if client:
+        reservations = reservations.filter(
+            Q(client__username__icontains=client)
+            | Q(client__first_name__icontains=client)
+            | Q(client__last_name__icontains=client)
+            | Q(client__email__icontains=client)
+        )
+
     paginator = Paginator(reservations, 20)
     page_number = request.GET.get('page')
     page_obj = paginator.get_page(page_number)
-    return render(request, 'reservations/reservation_list_admin.html', {'page_obj': page_obj})
+    return render(request, 'reservations/reservation_list_admin.html', {
+        'page_obj': page_obj,
+        'today': timezone.localdate(),
+    })
 
 
 @login_required
@@ -707,7 +752,8 @@ def livraison_create(request, reservation_id=None):
     else:
         # Admin sees all
         reservations = Reservation.objects.filter(
-            statut_reservation__in=['CONFIRMEE', 'EN_COURS']
+            statut_reservation__in=['CONFIRMEE', 'EN_COURS'],
+            delivery_option='LIVRAISON_DOMICILE',
         ).select_related('client', 'vehicule')
         livreurs = Utilisateur.objects.filter(role=Utilisateur.ROLE_LIVREUR)
 
@@ -726,6 +772,10 @@ def livraison_create(request, reservation_id=None):
         except Exception:
             messages.error(request, 'Réservation ou livreur invalide.')
             return redirect('reservations:livraison_list')
+
+        if reservation_obj.delivery_option != 'LIVRAISON_DOMICILE':
+            messages.error(request, "Cette reservation est en retrait agence. Aucun livreur ne peut etre assigne.")
+            return redirect('reservations:reservation_detail', pk=reservation_obj.id)
 
         if reservation_obj.date_debut != timezone.localdate():
             messages.error(request, "Le livreur peut être assigné uniquement le jour du départ.")
