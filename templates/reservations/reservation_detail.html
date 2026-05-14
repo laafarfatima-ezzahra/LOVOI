@@ -229,6 +229,8 @@ body { background: linear-gradient(135deg, #1a1a2e, #0f0f1a); min-height: 100vh;
                         <a href="{% url 'reservations:assigner_livreur' reservation.pk %}" class="action-btn btn-deliver w-100 mb-2">
                             <i class="fas fa-truck"></i> Planifier Livraison
                         </a>
+                    {% elif reservation.delivery_option == 'RETRAIT_AGENCE' %}
+                        <p class="text-white-50 mb-0"><i class="fas fa-building me-2"></i>Retrait agence: aucun livreur ne peut etre assigne.</p>
                     {% endif %}
                 {% endif %}
 
@@ -299,9 +301,13 @@ body { background: linear-gradient(135deg, #1a1a2e, #0f0f1a); min-height: 100vh;
                         </form>
                     {% endif %}
                 {% elif reservation.statut_reservation == 'TERMINEE' %}
+                    {% if has_avis %}
+                    <p class="text-success mb-0"><i class="fas fa-check-circle me-2"></i>Votre avis a déjà  été publié pour ce véhicule.</p>
+                    {% else %}
                     <a href="{% url 'reservations:avis_create' reservation.vehicule.pk %}" class="action-btn btn-confirm w-100">
                         <i class="fas fa-star"></i> Laisser un Avis
                     </a>
+                    {% endif %}
                 {% endif %}
             </div>
             {% endif %}
