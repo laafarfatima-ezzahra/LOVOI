@@ -140,7 +140,7 @@
                     </td>
                     <td>
                         <a href="{% url 'reservations:reservation_detail' res.pk %}" class="btn btn-sm btn-glass-secondary">Voir</a>
-                        {% if res.statut_reservation == 'EN_COURS' and res.vehicule.statut != 'DISPONIBLE' %}
+                        {% if res.statut_reservation == 'EN_COURS' %}
                         <form method="post" action="{% url 'reservations:extend_reservation' res.pk %}" class="extension-form mt-2">
                             {% csrf_token %}
                             <div class="input-group input-group-sm">

@@ -29,6 +29,8 @@ class Slot(models.Model):
 
 class Reservation(models.Model):
     """Core booking between client and vehicle."""
+    BLOCKING_STATUSES = ['CONFIRMEE', 'EN_COURS']
+
     STATUT_CHOICES = [
         ('EN_ATTENTE', _('En attente')),
         ('CONFIRMEE', _('Confirmée')),
@@ -81,21 +83,37 @@ class Reservation(models.Model):
     def facture(self):
         return self.factures.filter(type='LOCATION').order_by('date_facture').first()
 
+    @classmethod
+    def has_blocking_overlap_for(cls, vehicule, date_debut, date_fin, exclude_pk=None, for_update=False):
+        if not vehicule or not date_debut or not date_fin:
+            return False
+
+        reservations = cls.objects
+        if for_update:
+            reservations = reservations.select_for_update()
+
+        reservations = reservations.filter(
+            vehicule=vehicule,
+            statut_reservation__in=cls.BLOCKING_STATUSES,
+            date_debut__lte=date_fin,
+            date_fin__gte=date_debut,
+        )
+
+        if exclude_pk:
+            reservations = reservations.exclude(pk=exclude_pk)
+
+        return reservations.exists()
+
     def has_overlap(self):
         if not self.vehicule_id or not self.date_debut or not self.date_fin:
             return False
 
-        reservations = Reservation.objects.filter(
-            vehicule=self.vehicule,
-            statut_reservation__in=['EN_ATTENTE', 'CONFIRMEE', 'EN_COURS'],
-            date_debut__lt=self.date_fin,
-            date_fin__gt=self.date_debut,
+        return self.has_blocking_overlap_for(
+            self.vehicule,
+            self.date_debut,
+            self.date_fin,
+            exclude_pk=self.pk,
         )
-
-        if self.pk:
-            reservations = reservations.exclude(pk=self.pk)
-
-        return reservations.exists()
 
     def clean(self):
         super().clean()
@@ -106,9 +124,9 @@ class Reservation(models.Model):
                     'date_fin': _("La date de fin doit être après la date de début.")
                 })
 
-            if self.statut_reservation in ['EN_ATTENTE', 'CONFIRMEE', 'EN_COURS'] and self.has_overlap():
+            if self.statut_reservation in self.BLOCKING_STATUSES and self.has_overlap():
                 raise ValidationError(
-                    _("Ce véhicule est déjà réservé sur cette période.")
+                    _("Ce véhicule est déjà réservé sur cette période. Veuillez choisir une autre période ou un autre véhicule.")
                 )
 
         if self.delivery_option == 'LIVRAISON_DOMICILE' and not self.delivery_address:
@@ -148,8 +166,9 @@ class Reservation(models.Model):
     def annuler(self):
         if self.statut_reservation in ['EN_ATTENTE', 'CONFIRMEE']:
             self.statut_reservation = 'ANNULEE'
-            self.vehicule.statut = 'DISPONIBLE'
-            self.vehicule.save()
+            if self.vehicule.statut == 'EN_LIVRAISON':
+                self.vehicule.statut = 'DISPONIBLE'
+                self.vehicule.save(update_fields=['statut'])
             self.save()
             return True
         return False
@@ -157,8 +176,9 @@ class Reservation(models.Model):
     def demarrer(self):
         if self.statut_reservation == 'CONFIRMEE':
             self.statut_reservation = 'EN_COURS'
-            self.vehicule.statut = 'INDISPONIBLE'
-            self.vehicule.save()
+            if self.vehicule.statut == 'EN_LIVRAISON':
+                self.vehicule.statut = 'DISPONIBLE'
+                self.vehicule.save(update_fields=['statut'])
             self.save()
             return True
         return False
@@ -166,8 +186,6 @@ class Reservation(models.Model):
     def terminer(self):
         if self.statut_reservation == 'EN_COURS':
             self.statut_reservation = 'TERMINEE'
-            self.vehicule.statut = 'DISPONIBLE'
-            self.vehicule.save()
             self.save()
             return True
         return False

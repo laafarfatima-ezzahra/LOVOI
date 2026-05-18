@@ -16,6 +16,7 @@ urlpatterns = [
     path('dashboard/client/', views.dashboard_client, name='dashboard_client'),
     path('dashboard/admin/', views.dashboard_admin, name='dashboard_admin'),
     path('dashboard/employe/', views.dashboard_employe, name='dashboard_employe'),
+    path('dashboard/employe/reservations/<int:pk>/hide/', views.dashboard_employe_hide_reservation, name='dashboard_employe_hide_reservation'),
     path('dashboard/technicien/', views.dashboard_technicien, name='dashboard_technicien'),
     path('dashboard/livreur/', views.dashboard_livreur, name='dashboard_livreur'),
 

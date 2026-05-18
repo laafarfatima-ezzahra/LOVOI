@@ -247,9 +247,24 @@ body { background: linear-gradient(135deg, #1a1a2e, #0f0f1a); min-height: 100vh;
                 {% endif %}
 
                 {% if reservation.statut_reservation in 'EN_ATTENTE,CONFIRMEE' %}
-                    <a href="{% url 'reservations:reservation_cancel' reservation.pk %}" class="action-btn btn-cancel w-100 mb-2">
-                        <i class="fas fa-times"></i> Annuler
-                    </a>
+                    <form method="POST" action="{% url 'reservations:reservation_cancel' reservation.pk %}" class="mb-2">
+                        {% csrf_token %}
+                        {% if user.is_admin and reservation.statut_reservation == 'CONFIRMEE' %}
+                            <label class="form-label text-white-50 small">Remboursement (MAD)</label>
+                            <input
+                                type="number"
+                                name="remboursement_amount"
+                                class="form-control mb-2"
+                                min="0"
+                                max="{{ reservation.montant_total }}"
+                                step="0.01"
+                                value="0"
+                            >
+                        {% endif %}
+                        <button type="submit" class="action-btn btn-cancel w-100">
+                            <i class="fas fa-times"></i> Annuler
+                        </button>
+                    </form>
                 {% endif %}
 
                 {% comment %} Admin block retained - client prolongation moved to client actions {% endcomment %}
@@ -262,11 +277,7 @@ body { background: linear-gradient(135deg, #1a1a2e, #0f0f1a); min-height: 100vh;
             <div class="glass-card p-4 mb-4">
                 <h5 class="text-warning mb-4"><i class="fas fa-user-tie me-2"></i>Actions Employe</h5>
 
-                {% if reservation.statut_reservation == 'CONFIRMEE' and not has_etat_depart and reservation.date_debut == today %}
-                    <a href="{% url 'reservations:etat_des_lieux_create' reservation.pk %}?type=SORTIE" class="action-btn btn-deliver w-100 mb-2">
-                        <i class="fas fa-clipboard-check"></i> Etat depart
-                    </a>
-                {% elif reservation.statut_reservation == 'CONFIRMEE' and not has_etat_depart and reservation.date_debut == tomorrow %}
+                {% if reservation.statut_reservation == 'CONFIRMEE' and reservation.date_debut == today and not has_etat_depart %}
                     <a href="{% url 'reservations:etat_des_lieux_create' reservation.pk %}?type=SORTIE" class="action-btn btn-deliver w-100 mb-2">
                         <i class="fas fa-clipboard-check"></i> Etat depart
                     </a>
@@ -280,6 +291,14 @@ body { background: linear-gradient(135deg, #1a1a2e, #0f0f1a); min-height: 100vh;
                     <p class="text-white-50 mb-0">La location pourra etre demarree a la date de depart.</p>
                 {% elif reservation.statut_reservation == 'CONFIRMEE' and not has_etat_depart %}
                     <p class="text-white-50 mb-0">Etat des lieux de depart requis avant demarrage.</p>
+                {% elif reservation.statut_reservation == 'EN_COURS' and reservation.date_fin == today and not has_etat_retour %}
+                    <a href="{% url 'reservations:etat_des_lieux_create' reservation.pk %}?type=ENTREE" class="action-btn btn-confirm w-100 mb-2">
+                        <i class="fas fa-clipboard-check"></i> Etat retour
+                    </a>
+                {% elif reservation.statut_reservation == 'EN_COURS' and reservation.date_fin > today %}
+                    <p class="text-white-50 mb-0">Etat retour disponible a la date de retour.</p>
+                {% elif reservation.statut_reservation == 'EN_COURS' and has_etat_retour %}
+                    <p class="text-success mb-0"><i class="fas fa-check-circle me-2"></i>Etat retour deja enregistre.</p>
                 {% endif %}
             </div>
             {% endif %}
@@ -328,17 +347,15 @@ body { background: linear-gradient(135deg, #1a1a2e, #0f0f1a); min-height: 100vh;
                     <p class="text-success"><i class="fas fa-check-circle me-2"></i>Réservation confirmée!</p>
                 {% elif reservation.statut_reservation == 'EN_COURS' %}
                     <p class="text-primary"><i class="fas fa-car me-2"></i>Véhicule en cours de location</p>
-                    {% if reservation.vehicule.statut != 'DISPONIBLE' %}
-                        <form method="POST" action="{% url 'reservations:extend_reservation' reservation.pk %}" class="mt-3">
-                            {% csrf_token %}
-                            <div class="input-group" style="border-radius: 50px; overflow: hidden;">
-                                <input type="date" name="date_fin" class="form-control" min="{{ prolongation_min_date|date:'Y-m-d' }}" value="{{ prolongation_min_date|date:'Y-m-d' }}" required>
-                                <button type="submit" class="btn btn-warning" style="border-radius: 50px;">
-                                    <i class="fas fa-calendar-plus"></i> Demander prolongement
-                                </button>
-                            </div>
-                        </form>
-                    {% endif %}
+                    <form method="POST" action="{% url 'reservations:extend_reservation' reservation.pk %}" class="mt-3">
+                        {% csrf_token %}
+                        <div class="input-group" style="border-radius: 50px; overflow: hidden;">
+                            <input type="date" name="date_fin" class="form-control" min="{{ prolongation_min_date|date:'Y-m-d' }}" value="{{ prolongation_min_date|date:'Y-m-d' }}" required>
+                            <button type="submit" class="btn btn-warning" style="border-radius: 50px;">
+                                <i class="fas fa-calendar-plus"></i> Demander prolongement
+                            </button>
+                        </div>
+                    </form>
                 {% elif reservation.statut_reservation == 'TERMINEE' %}
                     {% if has_avis %}
                     <p class="text-success mb-0"><i class="fas fa-check-circle me-2"></i>Votre avis a déjà  été publié pour ce véhicule.</p>

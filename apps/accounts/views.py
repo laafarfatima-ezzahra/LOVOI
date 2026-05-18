@@ -8,6 +8,7 @@ from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.core.paginator import Paginator
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 from .models import Utilisateur, Notification
 from .forms import ClientRegistrationForm, ProfileForm
 from apps.vehicles.models import Vehicule, Categorie
@@ -17,7 +18,9 @@ from apps.reservations.models import Reservation, Livraison, EtatDesLieux
 def home(request):
     """Home page with vehicle catalog preview."""
     categories = Categorie.objects.all()
-    vehicules = Vehicule.objects.filter(statut='DISPONIBLE').order_by('-id')[:6]
+    vehicules = Vehicule.objects.exclude(
+        statut__in=['INDISPONIBLE', 'MAINTENANCE_REQUISE', 'EN_MAINTENANCE', 'EN_LIVRAISON']
+    ).order_by('-id')[:6]
     context = {
         'categories': categories,
         'vehicules': vehicules,
@@ -95,7 +98,9 @@ def dashboard_client(request):
     """Client dashboard."""
     client = request.user
     reservations = Reservation.objects.filter(client=client).order_by('-date_reservation')[:5]
-    vehicules = Vehicule.objects.filter(statut='DISPONIBLE').order_by('-id')[:6]
+    vehicules = Vehicule.objects.exclude(
+        statut__in=['INDISPONIBLE', 'MAINTENANCE_REQUISE', 'EN_MAINTENANCE', 'EN_LIVRAISON']
+    ).order_by('-id')[:6]
     context = {
         'reservations': reservations,
         'vehicules': vehicules,
@@ -267,16 +272,21 @@ def dashboard_employe(request):
 
     today = date.today()
     tomorrow = today + timedelta(days=1)
+    hidden_reservation_ids = request.session.get('employe_hidden_reservations', [])
     etats_des_lieux = EtatDesLieux.objects.filter(
         employe=request.user
     ).order_by('-date')[:10]
     departs_aujourdhui = Reservation.objects.filter(
         date_debut=today,
         statut_reservation='CONFIRMEE',
+    ).exclude(
+        id__in=hidden_reservation_ids,
     ).select_related('client', 'vehicule').order_by('date_debut')
     retours_aujourdhui = Reservation.objects.filter(
         date_fin=today,
         statut_reservation='EN_COURS',
+    ).exclude(
+        id__in=hidden_reservation_ids,
     ).select_related('client', 'vehicule').order_by('date_fin')
     etat_depart_exists = EtatDesLieux.objects.filter(
         reservation=OuterRef('pk'),
@@ -288,16 +298,24 @@ def dashboard_employe(request):
     )
     reservations_a_venir = Reservation.objects.filter(
         date_debut__gte=today,
+    ).exclude(
+        id__in=hidden_reservation_ids,
     ).annotate(
         has_etat_depart=Exists(etat_depart_exists),
     ).select_related('client', 'vehicule').order_by('date_debut')
     reservations_en_cours = Reservation.objects.filter(
         statut_reservation='EN_COURS',
+    ).exclude(
+        id__in=hidden_reservation_ids,
+    ).annotate(
+        has_etat_retour=Exists(etat_retour_exists),
     ).select_related('client', 'vehicule').order_by('date_fin')
     retours_imminents = Reservation.objects.filter(
         statut_reservation='EN_COURS',
         date_fin__gte=today,
         date_fin__lte=tomorrow,
+    ).exclude(
+        id__in=hidden_reservation_ids,
     ).annotate(
         has_etat_retour=Exists(etat_retour_exists),
     ).select_related('client', 'vehicule').order_by('date_fin')
@@ -341,6 +359,20 @@ def dashboard_employe(request):
         'terminees': etats_des_lieux.count(),
     }
     return render(request, 'accounts/dashboard_employe.html', context)
+
+
+@login_required
+@user_passes_test(lambda u: u.is_employe())
+@require_POST
+def dashboard_employe_hide_reservation(request, pk):
+    """Hide a reservation from the employee dashboard without deleting it."""
+    get_object_or_404(Reservation, pk=pk)
+    hidden = set(request.session.get('employe_hidden_reservations', []))
+    hidden.add(pk)
+    request.session['employe_hidden_reservations'] = sorted(hidden)
+    request.session.modified = True
+    messages.success(request, 'Reservation masquee du dashboard.')
+    return redirect('accounts:dashboard_employe')
 
 
 @login_required

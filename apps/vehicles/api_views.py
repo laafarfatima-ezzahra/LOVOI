@@ -32,7 +32,7 @@ class VehicleViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def available(self, request):
         """Get available vehicles."""
-        vehicles = self.queryset.filter(statut='DISPONIBLE')
+        vehicles = self.queryset.exclude(statut__in=['INDISPONIBLE', 'MAINTENANCE_REQUISE', 'EN_MAINTENANCE'])
         serializer = VehiculeListSerializer(vehicles, many=True)
         return Response(serializer.data)
 

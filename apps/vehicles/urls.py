@@ -12,6 +12,7 @@ urlpatterns = [
     path('create/', views.vehicle_create, name='vehicle_create'),
     path('<int:pk>/edit/', views.vehicle_update, name='vehicle_update'),
     path('<int:pk>/delete/', views.vehicle_delete, name='vehicle_delete'),
+    path('<int:pk>/toggle-availability/', views.vehicle_toggle_availability, name='vehicle_toggle_availability'),
 
     # Maintenance
     path('maintenance/', views.maintenance_list, name='maintenance_list'),

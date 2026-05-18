@@ -10,7 +10,7 @@ from django.http import HttpResponse, JsonResponse
 from django.views.decorators.http import require_http_methods
 from django.utils import timezone
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from .models import (Reservation, Slot, Contrat, Livraison, Paiement,
                      Facture, Avis,EtatDesLieux, DemandeProlongation)
 from .forms import (ReservationForm, SlotForm, LivraisonForm, PaiementForm,
@@ -23,6 +23,21 @@ import sys
 
 
 # ==================== CLIENT VIEWS ====================
+
+OVERLAP_MESSAGE = (
+    "Ce vehicule est deja reserve sur cette periode. "
+    "Veuillez choisir une autre periode ou un autre vehicule."
+)
+
+
+def _clear_booking_session(request):
+    request.session.pop('reservation_data', None)
+    request.session.pop('contract_signed', None)
+    request.session.pop('signature_name', None)
+
+
+def _dates_overlap_existing_booking(vehicule, date_debut, date_fin):
+    return Reservation.has_blocking_overlap_for(vehicule, date_debut, date_fin)
 
 def conditions_location(request):
     """Simple public rental conditions page."""
@@ -49,6 +64,18 @@ def reservation_create(request, vehicle_id):
         print(f"=== reservation_create POST with vehicle_id={vehicle_id} ===")
         form = ReservationForm(request.POST)
         if form.is_valid():
+            date_debut = form.cleaned_data['date_debut']
+            date_fin = form.cleaned_data['date_fin']
+
+            if vehicule.effective_statut != 'DISPONIBLE':
+                messages.error(request, 'Vehicule non disponible.')
+                return redirect('reservations:reservation_create', vehicle_id=vehicle_id)
+
+            if _dates_overlap_existing_booking(vehicule, date_debut, date_fin):
+                _clear_booking_session(request)
+                messages.error(request, OVERLAP_MESSAGE)
+                return redirect('reservations:reservation_create', vehicle_id=vehicle_id)
+
             delivery_option = form.cleaned_data.get('delivery_option') or 'RETRAIT_AGENCE'
             delivery_address = form.cleaned_data.get('delivery_address') or ''
             delivery_distance_km = Decimal('0.00')
@@ -83,8 +110,8 @@ def reservation_create(request, vehicle_id):
             # Store form data in session and redirect to contract signing
             request.session['reservation_data'] = {
                 'vehicule_id': vehicle_id,
-                'date_debut': str(form.cleaned_data['date_debut']),
-                'date_fin': str(form.cleaned_data['date_fin']),
+                'date_debut': str(date_debut),
+                'date_fin': str(date_fin),
                 'lieu_depart': lieu_depart,
                 'lieu_retour': lieu_retour,
                 'latitude_depart': latitude_depart,
@@ -135,6 +162,17 @@ def contract_sign(request, vehicle_id):
     from datetime import date
     date_debut = date.fromisoformat(data['date_debut'])
     date_fin = date.fromisoformat(data['date_fin'])
+
+    if vehicule.effective_statut != 'DISPONIBLE':
+        _clear_booking_session(request)
+        messages.error(request, 'Vehicule non disponible.')
+        return redirect('reservations:reservation_create', vehicle_id=vehicle_id)
+
+    if _dates_overlap_existing_booking(vehicule, date_debut, date_fin):
+        _clear_booking_session(request)
+        messages.error(request, OVERLAP_MESSAGE)
+        return redirect('reservations:reservation_create', vehicle_id=vehicle_id)
+
     nombre_jours = max((date_fin - date_debut).days, 1)
 
     from decimal import Decimal
@@ -201,6 +239,17 @@ def reservation_payment(request, vehicle_id):
     from datetime import date
     date_debut = date.fromisoformat(data['date_debut'])
     date_fin = date.fromisoformat(data['date_fin'])
+
+    if vehicule.effective_statut != 'DISPONIBLE':
+        _clear_booking_session(request)
+        messages.error(request, 'Vehicule non disponible.')
+        return redirect('reservations:reservation_create', vehicle_id=vehicle_id)
+
+    if _dates_overlap_existing_booking(vehicule, date_debut, date_fin):
+        _clear_booking_session(request)
+        messages.error(request, OVERLAP_MESSAGE)
+        return redirect('reservations:reservation_create', vehicle_id=vehicle_id)
+
     nombre_jours = max((date_fin - date_debut).days, 1)
 
     from decimal import Decimal
@@ -278,11 +327,17 @@ def process_payment(request, vehicle_id):
 
         try:
             with transaction.atomic():
+                overlapping = Reservation.has_blocking_overlap_for(
+                    vehicule,
+                    reservation.date_debut,
+                    reservation.date_fin,
+                    for_update=True,
+                )
+                if overlapping:
+                    raise ValidationError(OVERLAP_MESSAGE)
+
                 reservation.full_clean()
                 reservation.save()
-
-                vehicule.statut = 'INDISPONIBLE'
-                vehicule.save(update_fields=['statut'])
         except ValidationError as exc:
             for message in exc.messages:
                 messages.error(request, message)
@@ -360,6 +415,7 @@ def reservation_detail(request, pk):
     if request.user.is_authenticated:
         has_avis = Avis.objects.filter(client=request.user, vehicule=reservation.vehicule).exists()
     has_etat_depart = reservation.etats_des_lieux.filter(type='SORTIE').exists()
+    has_etat_retour = reservation.etats_des_lieux.filter(type='ENTREE').exists()
 
     today = timezone.localdate()
     tomorrow = today + timedelta(days=1)
@@ -373,6 +429,7 @@ def reservation_detail(request, pk):
                       'prolongation_min_date': prolongation_min_date,
                       'has_avis': has_avis,
                       'has_etat_depart': has_etat_depart,
+                      'has_etat_retour': has_etat_retour,
                   })
 
 
@@ -480,8 +537,59 @@ def reservation_confirm(request, pk):
 def reservation_cancel(request, pk):
     """Cancel a reservation."""
     reservation = get_object_or_404(Reservation, pk=pk)
-    if reservation.annuler():
-        messages.success(request, 'Réservation annulée!')
+    remboursement_amount = Decimal('0.00')
+
+    if request.method == 'POST' and reservation.statut_reservation == 'CONFIRMEE':
+        raw_amount = (request.POST.get('remboursement_amount') or '0').strip().replace(',', '.')
+        try:
+            remboursement_amount = Decimal(raw_amount).quantize(Decimal('0.01'))
+        except (InvalidOperation, ValueError):
+            messages.error(request, 'Montant de remboursement invalide.')
+            return redirect('reservations:reservation_detail', pk=reservation.pk)
+
+        if remboursement_amount < Decimal('0.00'):
+            messages.error(request, 'Le remboursement ne peut pas etre negatif.')
+            return redirect('reservations:reservation_detail', pk=reservation.pk)
+
+        if reservation.montant_total and remboursement_amount > reservation.montant_total:
+            messages.error(request, 'Le remboursement ne peut pas depasser le montant total de la reservation.')
+            return redirect('reservations:reservation_detail', pk=reservation.pk)
+
+    with transaction.atomic():
+        cancelled = reservation.annuler()
+        if cancelled and remboursement_amount > Decimal('0.00'):
+            Paiement.objects.create(
+                reservation=reservation,
+                type='REMBOURSEMENT',
+                amount=remboursement_amount,
+                mode='CARTE_BANCAIRE',
+                statut='COMPLETE',
+                transaction_id=f'REFUND-CANCEL-{reservation.id}-{timezone.now().timestamp():.0f}',
+            )
+        if cancelled:
+            employes = Utilisateur.objects.filter(role='EMPLOYE')
+            remboursement_text = (
+                f' Remboursement: {remboursement_amount} MAD.'
+                if remboursement_amount > Decimal('0.00')
+                else ''
+            )
+            for employe in employes:
+                Notification.objects.create(
+                    utilisateur=employe,
+                    type='RESERVATION',
+                    titre='Reservation annulee',
+                    message=(
+                        f'Reservation #{reservation.id} annulee par admin - '
+                        f'{reservation.vehicule} du {reservation.date_debut} au {reservation.date_fin}.'
+                        f'{remboursement_text}'
+                    ),
+                )
+    if cancelled:
+        if remboursement_amount > Decimal('0.00'):
+            messages.success(request, f'Reservation annulee. Remboursement enregistre: {remboursement_amount} MAD.')
+        else:
+            messages.success(request, 'Reservation annulee.')
+        return redirect('reservations:reservation_list')
     else:
         messages.error(request, 'Impossible d\'annuler cette réservation.')
     return redirect('reservations:reservation_list')
@@ -534,7 +642,7 @@ def extend_reservation(request, pk):
         messages.error(request, 'Accès non autorisé.')
         return redirect('reservations:reservation_detail', pk=pk)
 
-    if reservation.statut_reservation != 'EN_COURS' or reservation.vehicule.statut == 'DISPONIBLE':
+    if reservation.statut_reservation != 'EN_COURS':
         messages.error(request, 'La prolongation est possible uniquement pendant une location en cours.')
         return redirect('reservations:reservation_detail', pk=pk)
 
@@ -554,9 +662,9 @@ def extend_reservation(request, pk):
 
     overlapping = Reservation.objects.filter(
         vehicule=reservation.vehicule,
-        statut_reservation__in=['EN_ATTENTE', 'CONFIRMEE', 'EN_COURS'],
-        date_debut__lt=nouvelle_date_fin,
-        date_fin__gt=reservation.date_fin,
+        statut_reservation__in=Reservation.BLOCKING_STATUSES,
+        date_debut__lte=nouvelle_date_fin,
+        date_fin__gte=reservation.date_fin,
     ).exclude(pk=reservation.pk).exists()
 
     if overlapping:
@@ -591,7 +699,7 @@ def extension_payment(request, pk):
         messages.error(request, 'Accès non autorisé.')
         return redirect('reservations:reservation_detail', pk=pk)
 
-    if reservation.statut_reservation != 'EN_COURS' or reservation.vehicule.statut == 'DISPONIBLE':
+    if reservation.statut_reservation != 'EN_COURS':
         messages.error(request, "La prolongation n'est plus disponible pour cette réservation.")
         request.session.pop('extension_data', None)
         return redirect('reservations:reservation_detail', pk=pk)
@@ -611,9 +719,9 @@ def extension_payment(request, pk):
     if request.method == 'POST':
         overlapping = Reservation.objects.filter(
             vehicule=reservation.vehicule,
-            statut_reservation__in=['EN_ATTENTE', 'CONFIRMEE', 'EN_COURS'],
-            date_debut__lt=nouvelle_date_fin,
-            date_fin__gt=reservation.date_fin,
+            statut_reservation__in=Reservation.BLOCKING_STATUSES,
+            date_debut__lte=nouvelle_date_fin,
+            date_fin__gte=reservation.date_fin,
         ).exclude(pk=reservation.pk).exists()
 
         if overlapping or reservation.date_fin != ancienne_date_fin:
@@ -988,13 +1096,11 @@ def etat_des_lieux_create(request, reservation_id):
         default_type = 'ENTREE' if reservation.statut_reservation == 'EN_COURS' else 'SORTIE'
 
     today = timezone.localdate()
-    tomorrow = today + timedelta(days=1)
-
     if request.user.is_employe():
         depart_allowed = (
             default_type == 'SORTIE'
             and reservation.statut_reservation == 'CONFIRMEE'
-            and reservation.date_debut in [today, tomorrow]
+            and reservation.date_debut == today
         )
         retour_allowed = (
             default_type == 'ENTREE'
@@ -1268,20 +1374,20 @@ def check_availability(request):
     if fin <= debut:
         return JsonResponse({'available': False, 'reason': 'La date de fin doit être après la date de début'})
 
-    # Check vehicle status
-    if vehicule.statut != 'DISPONIBLE':
+    # Manual unavailability/maintenance blocks booking globally; active rentals are handled by date overlap.
+    if vehicule.effective_statut != 'DISPONIBLE':
         return JsonResponse({'available': False, 'reason': 'Véhicule non disponible'})
 
     # Check for overlapping reservations
     overlapping = Reservation.objects.filter(
         vehicule=vehicule,
-        statut_reservation__in=['EN_ATTENTE', 'CONFIRMEE', 'EN_COURS'],
-        date_debut__lt=fin,
-        date_fin__gt=debut
+        statut_reservation__in=Reservation.BLOCKING_STATUSES,
+        date_debut__lte=fin,
+        date_fin__gte=debut
     ).exists()
 
     if overlapping:
-        return JsonResponse({'available': False, 'reason': 'Véhicule déjà réservé pour ces dates'})
+        return JsonResponse({'available': False, 'reason': 'Vehicule deja reserve pour ces dates. Veuillez choisir une autre periode ou un autre vehicule.'})
 
     # Calculate price
     jours = max((fin - debut).days, 1)
@@ -1402,9 +1508,9 @@ def demander_prolongation(request, pk):
     # Check overlapping
     overlapping = Reservation.objects.filter(
         vehicule=reservation.vehicule,
-        statut_reservation__in=['EN_ATTENTE', 'CONFIRMEE', 'EN_COURS'],
-        date_debut__lt=nouvelle_date_fin,
-        date_fin__gt=reservation.date_fin,
+        statut_reservation__in=Reservation.BLOCKING_STATUSES,
+        date_debut__lte=nouvelle_date_fin,
+        date_fin__gte=reservation.date_fin,
     ).exclude(pk=reservation.pk).exists()
 
     if overlapping:

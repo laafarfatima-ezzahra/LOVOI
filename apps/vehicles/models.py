@@ -69,7 +69,18 @@ class Vehicule(models.Model):
         return f"{self.marque} {self.modele} ({self.immatriculation})"
 
     def is_available(self):
-        return self.statut == 'DISPONIBLE'
+        return self.effective_statut == 'DISPONIBLE'
+
+    @property
+    def effective_statut(self):
+        if self.statut in ['INDISPONIBLE', 'MAINTENANCE_REQUISE', 'EN_MAINTENANCE']:
+            return 'INDISPONIBLE'
+
+        return 'DISPONIBLE'
+
+    @property
+    def effective_statut_display(self):
+        return dict(self.STATUT_CHOICES).get(self.effective_statut, self.effective_statut)
 
 
 class VehiculePhoto(models.Model):

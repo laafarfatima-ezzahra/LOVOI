@@ -83,6 +83,14 @@
     <div class="row">
         <!-- Left: Form -->
         <div class="col-lg-7">
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert {% if message.tags == 'error' %}alert-danger{% else %}alert-{{ message.tags|default:'info' }}{% endif %} mb-3">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+
             <div class="card shadow-lg border-0" style="border-radius: 20px;">
                 <div class="card-body p-4">
                     <!-- Vehicle Summary -->

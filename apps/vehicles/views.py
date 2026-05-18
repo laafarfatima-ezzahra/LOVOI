@@ -4,6 +4,7 @@ from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db.models import Avg, Q
 from django.http import HttpResponse
+from django.views.decorators.http import require_POST
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from .models import Vehicule, Categorie, Maintenance, Document
@@ -73,9 +74,9 @@ def vehicle_list(request):
 
         if debut and fin and fin > debut:
             reserved_vehicle_ids = Reservation.objects.filter(
-                statut_reservation__in=['EN_ATTENTE', 'CONFIRMEE', 'EN_COURS'],
-                date_debut__lt=fin,
-                date_fin__gt=debut,
+                statut_reservation__in=Reservation.BLOCKING_STATUSES,
+                date_debut__lte=fin,
+                date_fin__gte=debut,
             ).values_list('vehicule_id', flat=True)
             vehicules = vehicules.exclude(id__in=reserved_vehicle_ids)
 
@@ -159,10 +160,36 @@ def vehicle_delete(request, pk):
     """Delete vehicle."""
     vehicule = get_object_or_404(Vehicule, pk=pk)
     if request.method == 'POST':
+        if vehicule.reservations.filter(statut_reservation__in=Reservation.BLOCKING_STATUSES).exists():
+            messages.error(request, 'Impossible de supprimer un vehicule avec une reservation confirmee ou en cours.')
+            return redirect('vehicles:vehicle_list')
         vehicule.delete()
         messages.success(request, 'Véhicule supprimé!')
         return redirect('vehicles:vehicle_list')
     return render(request, 'vehicles/vehicle_confirm_delete.html', {'vehicule': vehicule})
+
+
+@login_required
+@user_passes_test(lambda u: u.is_admin())
+@require_POST
+def vehicle_toggle_availability(request, pk):
+    """Toggle manual vehicle availability for admins."""
+    vehicule = get_object_or_404(Vehicule, pk=pk)
+
+    if vehicule.statut in ['MAINTENANCE_REQUISE', 'EN_MAINTENANCE', 'EN_LIVRAISON']:
+        messages.error(request, 'Ce statut doit etre modifie depuis la fiche du vehicule ou le flux operationnel.')
+        return redirect('vehicles:vehicle_list')
+
+    if vehicule.statut == 'DISPONIBLE':
+        vehicule.statut = 'INDISPONIBLE'
+        message = 'Vehicule marque indisponible.'
+    else:
+        vehicule.statut = 'DISPONIBLE'
+        message = 'Vehicule marque disponible.'
+
+    vehicule.save(update_fields=['statut'])
+    messages.success(request, message)
+    return redirect('vehicles:vehicle_list')
 
 
 # ==================== MAINTENANCE ====================

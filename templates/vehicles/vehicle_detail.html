@@ -200,13 +200,13 @@
                         <h1 class="mb-2" style="color: white;">{{ vehicule.marque }} {{ vehicule.modele }}</h1>
                         <small class="text-muted">{{ vehicule.immatriculation }}</small>
                     </div>
-                    {% if vehicule.statut == 'DISPONIBLE' %}
+                    {% if vehicule.effective_statut == 'DISPONIBLE' %}
                         <span class="badge status-disponible status-badge">
-                            <i class="fas fa-circle me-1" style="font-size: 6px;"></i>{{ vehicule.get_statut_display }}
+                            <i class="fas fa-circle me-1" style="font-size: 6px;"></i>{{ vehicule.effective_statut_display }}
                         </span>
                     {% else %}
                         <span class="badge status-indisponible status-badge">
-                            {{ vehicule.get_statut_display }}
+                            {{ vehicule.effective_statut_display }}
                         </span>
                     {% endif %}
                 </div>
@@ -243,7 +243,7 @@
                     </div>
                 </div>
 
-                {% if vehicule.statut != 'DISPONIBLE' %}
+                {% if vehicule.effective_statut != 'DISPONIBLE' %}
                     <button class="btn btn-outline-glass w-100 mb-3" disabled>
                         <i class="fas fa-ban me-2"></i>Non disponible
                     </button>
